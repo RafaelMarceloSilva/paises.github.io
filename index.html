@@ -1,4 +1,5 @@
 
+
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -394,6 +395,11 @@
         <div class="title">Qual o continente?</div>
         <div class="desc">Veja o país, adivinhe o continente</div>
       </div>
+      <div class="quiz-type-btn" data-type="reverseCapital" onclick="selectQuizType(this)">
+        <div class="emoji">🔄</div>
+        <div class="title">Qual o país? (a partir da capital)</div>
+        <div class="desc">Aprendizagem reversa: veja a capital, adivinhe o país</div>
+      </div>
     </div>
     <div style="text-align:center;margin-bottom:24px;">
       <label style="color:var(--text2);font-size:.9rem;margin-right:10px;">Número de perguntas:</label>
@@ -596,6 +602,15 @@
     <div class="mem-stats-grid" id="memStatsGrid"></div>
     <h3 style="margin-bottom:16px;color:var(--text2)">Progresso por continente</h3>
     <div id="contProgress"></div>
+    <h3 style="margin:24px 0 16px;color:var(--text2)">🎯 Plano de estudo personalizado</h3>
+    <div id="studyPlan"></div>
+    <h3 style="margin:24px 0 16px;color:var(--text2)">💾 Dados (funciona 100% offline, salvo no seu navegador)</h3>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;">
+      <button class="btn secondary" onclick="exportData()">⬇️ Exportar progresso (.json)</button>
+      <button class="btn secondary" onclick="document.getElementById('importFileInput').click()">⬆️ Importar progresso</button>
+      <input type="file" id="importFileInput" accept="application/json" style="display:none" onchange="importData(event)">
+      <button class="btn danger" onclick="if(confirm('Isso apaga TODO o progresso salvo. Continuar?')){memoryData={};xpData=defaultXP();saveMemory();saveXP();renderMemStats();renderMaster();renderDifficult();renderSRS();}">🗑️ Limpar tudo</button>
+    </div>
   </div>
 
   <!-- Master Mode -->
@@ -923,11 +938,74 @@ let currentContinent = 'Todos';
 let quizState = {};
 let flashState = {};
 let speedState = {};
+let masterState = {};
 let memoryData = JSON.parse(localStorage.getItem('memData')||'{}');
 // memoryData: { [countryName]: { errors, easies, lastReview, srsLevel, dominated } }
 
 function saveMemory(){localStorage.setItem('memData',JSON.stringify(memoryData));}
 function getMem(name){return memoryData[name]||(memoryData[name]={errors:0,easies:0,lastReview:null,srsLevel:0,dominated:false});}
+
+// ---- Master Mode / Gamification state ----
+function defaultXP(){return {xp:0,streak:0,lastPlayDay:null,achievements:[],masterLevel:1,masterHistory:[]};}
+let xpData = Object.assign(defaultXP(), JSON.parse(localStorage.getItem('xpData')||'{}'));
+function saveXP(){localStorage.setItem('xpData',JSON.stringify(xpData));}
+function todayStr(){return new Date().toISOString().slice(0,10);}
+function bumpStreak(){
+  const today=todayStr();
+  if(xpData.lastPlayDay===today)return; // already counted today
+  const y=new Date(Date.now()-86400000).toISOString().slice(0,10);
+  xpData.streak = (xpData.lastPlayDay===y) ? (xpData.streak||0)+1 : 1;
+  xpData.lastPlayDay=today;
+  saveXP();
+}
+function addXP(n){
+  xpData.xp=(xpData.xp||0)+n;
+  saveXP();
+  checkAchievements();
+}
+// XP needed to reach a given master level (progressive curve)
+function xpForLevel(lvl){return Math.round(50*lvl*lvl + 50*lvl);}
+function currentMasterLevel(){
+  let lvl=1;
+  while(xpData.xp>=xpForLevel(lvl))lvl++;
+  return lvl;
+}
+const ACHIEVEMENTS=[
+  {id:'first_quiz',name:'Primeiro Passo',desc:'Complete seu primeiro quiz',emoji:'🥇',check:()=>quizState.questions&&quizState.questions.length>0},
+  {id:'streak5',name:'Sequência de Fogo',desc:'5 acertos consecutivos no Modo Mestre',emoji:'🔥',check:()=>(masterState.bestCombo||0)>=5},
+  {id:'streak10',name:'Imparável',desc:'10 acertos consecutivos no Modo Mestre',emoji:'⚡',check:()=>(masterState.bestCombo||0)>=10},
+  {id:'perfect',name:'Perfeição',desc:'100% de acerto em um desafio do Modo Mestre',emoji:'💯',check:()=>masterState.lastPerfect===true},
+  {id:'africa_master',name:'Mestre da África',desc:'Domine 90% dos países da África',emoji:'🌍',check:()=>contDomPct('África')>=90},
+  {id:'europe_master',name:'Mestre da Europa',desc:'Domine 90% dos países da Europa',emoji:'🌍',check:()=>contDomPct('Europa')>=90},
+  {id:'asia_master',name:'Mestre da Ásia',desc:'Domine 90% dos países da Ásia',emoji:'🌍',check:()=>contDomPct('Ásia')>=90},
+  {id:'americas_master',name:'Mestre das Américas',desc:'Domine 90% dos países da América do Norte e Sul',emoji:'🌍',check:()=>contDomPct('América do Norte')>=90&&contDomPct('América do Sul')>=90},
+  {id:'oceania_master',name:'Mestre da Oceania',desc:'Domine 90% dos países da Oceania',emoji:'🌍',check:()=>contDomPct('Oceania')>=90},
+  {id:'level5',name:'Nível 5',desc:'Alcance o nível 5 no Modo Mestre',emoji:'⭐',check:()=>currentMasterLevel()>=5},
+  {id:'level10',name:'Nível 10',desc:'Alcance o nível 10 no Modo Mestre',emoji:'🌟',check:()=>currentMasterLevel()>=10},
+  {id:'streakdays7',name:'Uma Semana de Estudo',desc:'Estude por 7 dias seguidos',emoji:'📅',check:()=>(xpData.streak||0)>=7},
+  {id:'worldmaster',name:'Mestre do Mundo',desc:'Domine 95% de todos os países',emoji:'👑',check:()=>{const d=countries.filter(c=>getMem(c.name).dominated).length;return Math.round(d/countries.length*100)>=95;}},
+];
+function contDomPct(cont){
+  const list=countries.filter(c=>c.continent===cont);
+  const dom=list.filter(c=>getMem(c.name).dominated).length;
+  return Math.round(dom/list.length*100);
+}
+let newlyUnlocked=[];
+function checkAchievements(){
+  ACHIEVEMENTS.forEach(a=>{
+    if(!xpData.achievements.includes(a.id)&&a.check()){
+      xpData.achievements.push(a.id);
+      newlyUnlocked.push(a);
+    }
+  });
+  if(newlyUnlocked.length)saveXP();
+}
+function popAchievementToast(){
+  if(!newlyUnlocked.length)return '';
+  const html=newlyUnlocked.map(a=>`<div style="background:linear-gradient(135deg,rgba(88,166,255,.15),rgba(188,140,255,.15));border:1px solid var(--accent);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:8px;display:flex;align-items:center;gap:10px;animation:fadeIn .4s ease both;"><span style="font-size:1.6rem">${a.emoji}</span><div><div style="font-weight:700;font-size:.9rem">🏆 Conquista desbloqueada: ${a.name}</div><div style="font-size:.78rem;color:var(--text2)">${a.desc}</div></div></div>`).join('');
+  newlyUnlocked=[];
+  return html;
+}
 
 // =====================
 // NAV
@@ -1104,6 +1182,9 @@ function showQuestion(){
   if(type==='capital'){
     cardHTML=`<div class="q-type">Qual é a capital?</div><div class="q-flag">${q.flag}</div><div class="q-text">${q.name}</div><div class="q-sub">${q.continent}</div>`;
     optionsHTML=opts.map(o=>`<button class="quiz-opt" onclick="answerQuiz(this,'${o.name.replace(/'/g,"\\'")}','${q.name.replace(/'/g,"\\'")}')">${o.capital}</button>`).join('');
+  } else if(type==='reverseCapital'){
+    cardHTML=`<div class="q-type">Qual é o país? (aprendizagem reversa)</div><div class="q-text" style="font-size:1.4rem">🏙️ ${q.capital}</div><div class="q-sub">é a capital de qual país?</div>`;
+    optionsHTML=opts.map(o=>`<button class="quiz-opt" onclick="answerQuiz(this,'${o.name.replace(/'/g,"\\'")}','${q.name.replace(/'/g,"\\'")}')">${o.flag} ${o.name}</button>`).join('');
   } else if(type==='flag'){
     cardHTML=`<div class="q-type">De qual país é esta bandeira?</div><div class="q-flag">${q.flag}</div>`;
     optionsHTML=opts.map(o=>`<button class="quiz-opt" onclick="answerQuiz(this,'${o.name.replace(/'/g,"\\'")}','${q.name.replace(/'/g,"\\'")}')">${o.flag} ${o.name}</button>`).join('');
@@ -1242,34 +1323,109 @@ function renderMnemonics(){
 }
 
 // =====================
-// MEMORY PALACE
+// MEMORY PALACE — DREAM-LIKE ALPHABET PALACE (Method of Loci)
+// Each letter of the alphabet maps to one fixed room/place in your house
+// or neighborhood. Every country is assigned to the room matching the
+// first letter of its (Portuguese) name, and gets a procedurally
+// generated surreal, sensory, oneiric scene placed inside that room.
 // =====================
-const palace=[
-  {icon:'🛋️',name:'Sala de Estar',desc:'Capitais da América do Sul',cont:'América do Sul'},
-  {icon:'🍳',name:'Cozinha',desc:'Capitais da Europa',cont:'Europa'},
-  {icon:'🛏️',name:'Quarto',desc:'Capitais da Ásia',cont:'Ásia'},
-  {icon:'🚿',name:'Banheiro',desc:'Capitais da África',cont:'África'},
-  {icon:'🏡',name:'Jardim',desc:'Capitais da Oceania',cont:'Oceania'},
-  {icon:'🚗',name:'Garagem',desc:'Capitais da América do Norte',cont:'América do Norte'},
-];
+const LETTER_ROOMS = {
+  A:{icon:'🛋️',name:'Sala de Estar'},
+  B:{icon:'🚿',name:'Banheiro'},
+  C:{icon:'🍳',name:'Cozinha'},
+  D:{icon:'🛏️',name:'Quarto'},
+  E:{icon:'💻',name:'Escritório'},
+  F:{icon:'🚗',name:'Garagem'},
+  G:{icon:'🌳',name:'Jardim'},
+  H:{icon:'🪜',name:'Sótão'},
+  I:{icon:'🕯️',name:'Porão'},
+  J:{icon:'🌅',name:'Varanda'},
+  K:{icon:'👗',name:'Closet'},
+  L:{icon:'🧺',name:'Lavanderia'},
+  M:{icon:'🥫',name:'Despensa'},
+  N:{icon:'🌇',name:'Terraço'},
+  O:{icon:'🏊',name:'Piscina'},
+  P:{icon:'🌻',name:'Quintal'},
+  Q:{icon:'🪞',name:'Escada'},
+  R:{icon:'🌙',name:'Sacada'},
+  S:{icon:'🔭',name:'Telhado'},
+  T:{icon:'📬',name:'Caixa de Correio'},
+  U:{icon:'🚪',name:'Portão de Entrada'},
+  V:{icon:'🚶',name:'Calçada'},
+  W:{icon:'🚦',name:'Esquina da Rua'},
+  X:{icon:'🥐',name:'Padaria da Esquina'},
+  Y:{icon:'⛲',name:'Praça em Frente'},
+  Z:{icon:'🏘️',name:'Garagem do Vizinho'},
+};
+function normalizeFirstLetter(name){
+  const stripped = name.normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  return stripped.charAt(0).toUpperCase();
+}
+// Sensory palettes used to procedurally build a vivid, dream-like scene.
+const DREAM_COLORS=['violeta elétrico','vermelho-sangue incandescente','verde-neon líquido','dourado cegante','azul-cobalto vibrante','rosa-choque fluorescente','laranja-fogo derretido','prateado espelhado','turquesa fosforescente'];
+const DREAM_SOUNDS=['um zumbido grave de motor de avião','tambores tribais ecoando nas paredes','um coro de vozes cantando ao contrário','sinos de cristal quebrando em câmera lenta','um trovão que nunca termina','risadas distorcidas em eco','um rugido de motor de fórmula 1','o som de água fervendo em alta pressão'];
+const DREAM_SMELLS=['cheiro de canela queimada misturado com gasolina','um perfume doce de flores apodrecendo','o aroma de pão fresco saindo do chão','um odor metálico de tempestade elétrica','fumaça de incenso roxo','cheiro salgado de maresia dentro de casa'];
+const DREAM_MOVES=['gira sem parar em espiral','flutua devagar como se estivesse sob a água','derrete e se reconstrói o tempo todo','salta em saltos impossíveis, como em gravidade reduzida','se estica como elástico até o teto','vibra e treme como gelatina'];
+const DREAM_EMOTIONS=['um misto de euforia e vertigem','pânico hilário, como em um pesadelo cômico','espanto absoluto, boca aberta','nostalgia estranha de um lugar nunca visitado','orgulho exagerado, quase heroico','riso incontrolável e incômodo ao mesmo tempo'];
+function hashStr(s){let h=0;for(let i=0;i<s.length;i++){h=(h*31+s.charCodeAt(i))|0;}return Math.abs(h);}
+function pick(arr,seed,offset){return arr[(seed+offset)%arr.length];}
+// Generates a unique-but-deterministic surreal scene for a country.
+function dreamScene(c){
+  const seed=hashStr(c.name);
+  const room=LETTER_ROOMS[normalizeFirstLetter(c.name)]||LETTER_ROOMS.A;
+  const color=pick(DREAM_COLORS,seed,0);
+  const sound=pick(DREAM_SOUNDS,seed,1);
+  const smell=pick(DREAM_SMELLS,seed,2);
+  const move=pick(DREAM_MOVES,seed,3);
+  const emotion=pick(DREAM_EMOTIONS,seed,4);
+  return `No(a) <strong>${room.name}</strong>, a bandeira ${c.flag} de <strong>${c.name}</strong> ${move}, banhada por uma luz ${color} que pinta as paredes. `+
+    `Ao fundo, ${sound}, enquanto ${smell} toma conta do ambiente. No centro da cena, a cidade de <strong>${c.capital}</strong> aparece em miniatura, gigantesca e minúscula ao mesmo tempo, `+
+    `flutuando sobre um móvel comum do cômodo. Você sente ${emotion} ao perceber que está, ao mesmo tempo, no(a) ${room.name} da sua casa e em pleno coração de ${c.continent}.`;
+}
+// Curated extra facts for a subset of countries, used to enrich the dream scene.
+const DREAM_FACTS={
+  "Brasil":"É o único país sul-americano de língua portuguesa e abriga a maior floresta tropical do mundo.",
+  "Japão":"É formado por mais de 6800 ilhas e tem o metrô mais pontual do planeta.",
+  "Egito":"Lar das únicas Sete Maravilhas do Mundo Antigo ainda existentes: as pirâmides de Gizé.",
+  "Vaticano":"É o menor país do mundo, inteiramente dentro da cidade de Roma.",
+  "Rússia":"É o maior país do mundo, atravessando 11 fusos horários.",
+  "Austrália":"É o único país que ocupa um continente inteiro.",
+  "França":"É o país mais visitado do mundo por turistas internacionais.",
+  "Índia":"Tem mais de 20 línguas oficiais reconhecidas pela constituição.",
+  "Canadá":"Tem a maior costa litorânea do mundo.",
+  "China":"Tem a Grande Muralha, estrutura visível por milhares de quilômetros.",
+};
 function renderPalace(){
-  document.getElementById('palaceRooms').innerHTML=palace.map((r,i)=>`
+  const groups={};
+  countries.forEach(c=>{
+    const L=normalizeFirstLetter(c.name);
+    const room=LETTER_ROOMS[L]||LETTER_ROOMS.A;
+    const key=L;
+    if(!groups[key])groups[key]={letter:L,room,items:[]};
+    groups[key].items.push(c);
+  });
+  const letters=Object.keys(groups).sort();
+  document.getElementById('palaceRooms').innerHTML=letters.map((L,i)=>{
+    const g=groups[L];
+    return `
     <div class="room-card" onclick="toggleRoom(${i})">
-      <div class="room-icon">${r.icon}</div>
-      <div class="room-name">${r.name}</div>
-      <div class="room-desc">${r.desc}</div>
-      <div class="room-count">${countries.filter(c=>c.continent===r.cont).length} países</div>
+      <div class="room-icon">${g.room.icon}</div>
+      <div class="room-name">${L} → ${g.room.name}</div>
+      <div class="room-desc">Países começando com "${L}"</div>
+      <div class="room-count">${g.items.length} país(es)</div>
     </div>
     <div class="room-items" id="room-${i}">
-      ${countries.filter(c=>c.continent===r.cont).map(c=>`
-        <div class="room-item">
+      ${g.items.map(c=>`
+        <div class="room-item" style="align-items:flex-start;">
           <div class="ri-flag">${c.flag}</div>
           <div class="ri-info">
-            <div class="ri-name">${c.name}</div>
-            <div class="ri-cap">🏙️ ${c.capital}</div>
+            <div class="ri-name">${c.name} <span style="color:var(--text2);font-weight:400;">— ${c.capital} (${c.continent})</span></div>
+            <div class="ri-cap" style="margin-top:6px;line-height:1.6;">🌀 ${dreamScene(c)}</div>
+            ${DREAM_FACTS[c.name]?`<div class="ri-cap" style="margin-top:6px;color:var(--purple);">📌 Fato curioso: ${DREAM_FACTS[c.name]}</div>`:''}
           </div>
         </div>`).join('')}
-    </div>`).join('');
+    </div>`;
+  }).join('');
 }
 function toggleRoom(i){
   const el=document.getElementById('room-'+i);
